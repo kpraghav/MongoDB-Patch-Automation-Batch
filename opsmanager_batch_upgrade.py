@@ -3,14 +3,18 @@ import logging
 import argparse
 import csv
 import time
+from requests.auth import HTTPDigestAuth
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Ops Manager API Credentials (Use environment variables in production)
 BASE_URL = "https://<ops-manager-url>/api/public/v1.0"
-API_KEY = "<your-api-key>"
+USERNAME = "<your-username>"
+PASSWORD = "<your-password>"
+
+AUTH = HTTPDigestAuth(USERNAME, PASSWORD)
 HEADERS = {
-    'Authorization': f'Bearer {API_KEY}',
     'Accept': 'application/json',
     'Content-Type': 'application/json'
 }
@@ -19,7 +23,7 @@ UPGRADE_STATUS_FILE = 'upgrade_status.csv'
 
 def get_automation_config(group_id):
     """Fetch the automation configuration for a given group ID."""
-    response = requests.get(f"{BASE_URL}/groups/{group_id}/automationConfig", headers=HEADERS)
+    response = requests.get(f"{BASE_URL}/groups/{group_id}/automationConfig", auth=AUTH, headers=HEADERS)
     response.raise_for_status()
     return response.json()
 
@@ -37,6 +41,7 @@ def upgrade_version(group_id, version):
     if updated:
         response = requests.put(
             f"{BASE_URL}/groups/{group_id}/automationConfig",
+            auth=AUTH,
             headers=HEADERS,
             json=config
         )
