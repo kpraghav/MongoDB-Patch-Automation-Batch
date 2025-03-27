@@ -12,8 +12,9 @@ USERNAME = "<your-username>"
 PASSWORD = "<your-password>"
 AUTH = HTTPDigestAuth(USERNAME, PASSWORD)
 
-SUCCESS_LOG_FILE = "opsmanager_success.log"
-ERROR_LOG_FILE = "opsmanager_errors.log"
+# Log Files
+SUCCESS_LOG_FILE = "opsmanager_rollback_success.log"
+ERROR_LOG_FILE = "opsmanager_rollback_errors.log"
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -31,22 +32,21 @@ def log_success(message):
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - SUCCESS: {message}\n")
 
 def rollback_group(group_id):
+    """ Rollback the group by decrementing the version """
     url = f"{BASE_URL}/groups/{group_id}/automationConfig"
     
-    # Fetch the current automation config
     response = requests.get(url, auth=AUTH)
     if response.status_code != 200:
         log_error(f"Failed to fetch automation config for Group {group_id}", response)
         return False
 
     config = response.json()
-
     if 'version' not in config:
         log_error(f"Missing 'version' field in automation config for Group {group_id}")
         return False
 
     old_version = config['version']
-    if old_version > 0:  # Ensure we don't decrement below 0
+    if old_version > 0:
         config['version'] -= 1
     else:
         log_error(f"Rollback failed for Group {group_id} - Already at version 0")
@@ -54,15 +54,14 @@ def rollback_group(group_id):
 
     response = requests.put(url, auth=AUTH, json=config)
     if response.status_code == 200:
-        success_msg = f"Rollback successful for Group {group_id} (Version: {old_version} → {config['version']})"
-        logging.info(success_msg)
-        log_success(success_msg)
+        log_success(f"Rollback triggered for Group {group_id} (Version: {old_version} → {config['version']})")
         return True
     else:
         log_error(f"Rollback failed for Group {group_id}", response)
         return False
 
 def process_batch(file_name):
+    """ Process the batch file and rollback each group """
     with open(file_name, 'r') as file:
         reader = csv.DictReader(file)
         for row in reader:
