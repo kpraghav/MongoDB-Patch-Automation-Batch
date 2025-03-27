@@ -1,71 +1,68 @@
 import requests
 import json
+import time
 import logging
 import argparse
 import csv
 from requests.auth import HTTPDigestAuth
 
+# Configurations
+BASE_URL = "https://<ops-manager-url>/api/public/v1.0"
+USERNAME = "<your-username>"
+PASSWORD = "<your-password>"
+AUTH = HTTPDigestAuth(USERNAME, PASSWORD)
+
+SUCCESS_LOG_FILE = "opsmanager_success.log"
+ERROR_LOG_FILE = "opsmanager_errors.log"
+
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Ops Manager Credentials
-USERNAME = "<your-ops-manager-username>"
-PASSWORD = "<your-ops-manager-password>"
-BASE_URL = "https://<ops-manager-url>/api/public/v1.0"
-HEADERS = {'Accept': 'application/json', 'Content-Type': 'application/json'}
+def log_error(message, response=None):
+    """ Log errors to a separate error log file """
+    with open(ERROR_LOG_FILE, "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - ERROR: {message}\n")
+        if response:
+            f.write(f"Status Code: {response.status_code}\nResponse: {response.text}\n\n")
 
-def read_batch_file(batch_file):
-    """ Read group IDs from batch file """
-    with open(batch_file, mode='r') as file:
-        return [row['groupId'] for row in csv.DictReader(file)]
+def log_success(message):
+    """ Log successful operations to a separate success log file """
+    with open(SUCCESS_LOG_FILE, "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - SUCCESS: {message}\n")
 
-def get_automation_config(group_id):
-    """ Fetch the current automationConfig """
+def rollback_group(group_id):
     url = f"{BASE_URL}/groups/{group_id}/automationConfig"
-    response = requests.get(url, headers=HEADERS, auth=HTTPDigestAuth(USERNAME, PASSWORD))
-    response.raise_for_status()
-    return response.json()
+    
+    response = requests.get(url, auth=AUTH)
+    if response.status_code != 200:
+        log_error(f"Failed to fetch automation config for Group {group_id}", response)
+        return False
 
-def rollback_version(group_id):
-    """ Rollback MongoDB version for the group """
-    logging.info(f"Rolling back Group {group_id}...")
+    config = response.json()
+    
+    # Decrement the version
+    config['version'] -= 1
 
-    config = get_automation_config(group_id)
+    response = requests.put(url, auth=AUTH, json=config)
+    if response.status_code == 200:
+        success_msg = f"Rollback successful for Group {group_id}"
+        logging.info(success_msg)
+        log_success(success_msg)
+        return True
+    else:
+        log_error(f"Rollback failed for Group {group_id}", response)
+        return False
 
-    # Increment the "version" field before applying rollback
-    config['version'] += 1
-
-    for process in config.get('processes', []):
-        process['version'] = process.get('lastKnownVersion', process['version'])
-
-    url = f"{BASE_URL}/groups/{group_id}/automationConfig"
-    response = requests.put(url, headers=HEADERS, auth=HTTPDigestAuth(USERNAME, PASSWORD), json=config)
-    response.raise_for_status()
-    logging.info(f"Rollback completed for Group {group_id}.")
-
-def main():
-    parser = argparse.ArgumentParser(description="Batch Rollback Script for MongoDB Ops Manager")
-    parser.add_argument('--batch-file', required=True, help="CSV file containing batch of group IDs")
-    args = parser.parse_args()
-
-    group_ids = read_batch_file(args.batch_file)
-    rollback_status = []
-
-    for group_id in group_ids:
-        try:
-            rollback_version(group_id)
-            rollback_status.append({'groupId': group_id, 'status': 'Rollback Success'})
-        except Exception as e:
-            logging.error(f"Rollback failed for Group {group_id}: {str(e)}")
-            rollback_status.append({'groupId': group_id, 'status': 'Rollback Failed'})
-
-    output_file = f"rollback_status_{int(time.time())}.csv"
-    with open(output_file, mode='w', newline='') as file:
-        writer = csv.DictWriter(file, fieldnames=['groupId', 'status'])
-        writer.writeheader()
-        writer.writerows(rollback_status)
-
-    logging.info(f"Rollback status written to {output_file}")
+def process_batch(file_name):
+    with open(file_name, 'r') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            group_id = row['groupId']
+            rollback_group(group_id)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Rollback MongoDB Ops Manager Groups from a batch file")
+    parser.add_argument('--batch-file', required=True, help="Batch CSV file containing group IDs")
+    args = parser.parse_args()
+
+    process_batch(args.batch_file)
