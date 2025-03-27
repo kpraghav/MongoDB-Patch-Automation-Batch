@@ -1,108 +1,88 @@
 import requests
+import json
+import time
 import logging
 import argparse
 import csv
-import time
 from requests.auth import HTTPDigestAuth
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Ops Manager API Credentials (Use environment variables in production)
+# Ops Manager Credentials
+USERNAME = "<your-ops-manager-username>"
+PASSWORD = "<your-ops-manager-password>"
 BASE_URL = "https://<ops-manager-url>/api/public/v1.0"
-USERNAME = "<your-username>"
-PASSWORD = "<your-password>"
+HEADERS = {'Accept': 'application/json', 'Content-Type': 'application/json'}
 
-AUTH = HTTPDigestAuth(USERNAME, PASSWORD)
-HEADERS = {
-    'Accept': 'application/json',
-    'Content-Type': 'application/json'
-}
-
-UPGRADE_STATUS_FILE = 'upgrade_status.csv'
+def read_batch_file(batch_file):
+    """ Read group IDs from batch file """
+    with open(batch_file, mode='r') as file:
+        return [row['groupId'] for row in csv.DictReader(file)]
 
 def get_automation_config(group_id):
-    """Fetch the automation configuration for a given group ID."""
-    response = requests.get(f"{BASE_URL}/groups/{group_id}/automationConfig", auth=AUTH, headers=HEADERS)
+    """ Fetch the current automationConfig """
+    url = f"{BASE_URL}/groups/{group_id}/automationConfig"
+    response = requests.get(url, headers=HEADERS, auth=HTTPDigestAuth(USERNAME, PASSWORD))
     response.raise_for_status()
     return response.json()
 
-def upgrade_version(group_id, version):
-    """Upgrade MongoDB version for a given group ID."""
-    logging.info(f"Fetching automation config for upgrade of Group {group_id}")
+def upgrade_version(group_id, new_version):
+    """ Upgrade MongoDB version for the group """
+    logging.info(f"Upgrading Group {group_id} to version {new_version}...")
+    
     config = get_automation_config(group_id)
 
-    updated = False
+    # Increment the "version" field at the end of the JSON
+    config['version'] += 1
+
     for process in config.get('processes', []):
-        if process.get('version') != version:
-            process['version'] = version  # Set new MongoDB version
-            updated = True
+        process['version'] = new_version  # Update to new MongoDB version
 
-    if updated:
-        response = requests.put(
-            f"{BASE_URL}/groups/{group_id}/automationConfig",
-            auth=AUTH,
-            headers=HEADERS,
-            json=config
-        )
-        response.raise_for_status()
-        logging.info(f"Upgrade initiated successfully for Group {group_id}")
-        return {'groupId': group_id, 'status': 'Upgrade Initiated'}
-    else:
-        logging.warning(f"Group {group_id} is already on version {version}")
-        return {'groupId': group_id, 'status': 'Already Upgraded'}
+    url = f"{BASE_URL}/groups/{group_id}/automationConfig"
+    response = requests.put(url, headers=HEADERS, auth=HTTPDigestAuth(USERNAME, PASSWORD), json=config)
+    response.raise_for_status()
+    logging.info(f"Upgrade initiated for Group {group_id}.")
 
-def monitor_upgrade(group_id, version):
-    """Monitor upgrade process and confirm completion."""
-    logging.info(f"Monitoring upgrade progress for Group {group_id}")
-    timeout = 1800  # 30 minutes timeout
-    start_time = time.time()
-
-    while time.time() - start_time < timeout:
+def monitor_upgrade(group_id):
+    """ Monitor upgrade progress """
+    logging.info(f"Monitoring upgrade for Group {group_id}...")
+    while True:
         time.sleep(30)
         config = get_automation_config(group_id)
-
-        if all(process.get('version') == version for process in config.get('processes', [])):
-            logging.info(f"Upgrade completed successfully for Group {group_id}")
-            return {'groupId': group_id, 'status': 'Upgrade Successful'}
-        logging.info("Upgrade still in progress...")
-
-    logging.error(f"Upgrade timed out for Group {group_id}")
-    return {'groupId': group_id, 'status': 'Upgrade Timeout'}
+        states = [proc.get('lastKnownVersion') == proc['version'] for proc in config.get('processes', [])]
+        if all(states):
+            logging.info(f"Upgrade successful for Group {group_id}.")
+            return True
+        logging.info(f"Upgrade in progress for Group {group_id}...")
 
 def main():
-    parser = argparse.ArgumentParser(description="MongoDB Ops Manager Batch Upgrade Script")
-    parser.add_argument('--file', required=True, help="CSV file containing group IDs to upgrade")
-    parser.add_argument('--version', required=True, help="MongoDB patch version to upgrade to")
+    parser = argparse.ArgumentParser(description="Batch Upgrade Script for MongoDB Ops Manager")
+    parser.add_argument('--batch-file', required=True, help="CSV file containing batch of group IDs")
+    parser.add_argument('--version', required=True, help="MongoDB version to upgrade to")
     args = parser.parse_args()
 
-    upgrade_status = []
+    group_ids = read_batch_file(args.batch_file)
+    patch_status = []
 
-    try:
-        with open(args.file, 'r') as file:
-            reader = csv.reader(file)
-            next(reader)  # Skip header if exists
-            for row in reader:
-                group_id = row[0].strip()
-                result = upgrade_version(group_id, args.version)
-                
-                if result['status'] == 'Upgrade Initiated':
-                    monitoring_result = monitor_upgrade(group_id, args.version)
-                    upgrade_status.append(monitoring_result)
-                else:
-                    upgrade_status.append(result)
+    for group_id in group_ids:
+        try:
+            upgrade_version(group_id, args.version)
+            if monitor_upgrade(group_id):
+                patch_status.append({'groupId': group_id, 'status': 'Success'})
+            else:
+                raise Exception("Upgrade failed.")
+        except Exception as e:
+            logging.error(f"Upgrade failed for Group {group_id}: {str(e)}. Rolling back...")
+            patch_status.append({'groupId': group_id, 'status': 'Failed'})
 
-    except Exception as e:
-        logging.critical(f"Unexpected error: {str(e)}")
-
-    # Write upgrade status to CSV
-    output_file = f'upgrade_status_{int(time.time())}.csv'
+    output_file = f"patch_status_{int(time.time())}.csv"
     with open(output_file, mode='w', newline='') as file:
         writer = csv.DictWriter(file, fieldnames=['groupId', 'status'])
         writer.writeheader()
-        writer.writerows(upgrade_status)
+        writer.writerows(patch_status)
 
-    logging.info(f"Upgrade status written to {output_file}")
+    logging.info(f"Patch status written to {output_file}")
 
 if __name__ == "__main__":
     main()
