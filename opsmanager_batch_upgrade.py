@@ -33,19 +33,24 @@ def log_success(message):
 def upgrade_group(group_id):
     url = f"{BASE_URL}/groups/{group_id}/automationConfig"
     
+    # Fetch the current automation config
     response = requests.get(url, auth=AUTH)
     if response.status_code != 200:
         log_error(f"Failed to fetch automation config for Group {group_id}", response)
         return False
 
     config = response.json()
-    
-    # Increment the version
-    config['version'] += 1
+
+    if 'version' not in config:
+        log_error(f"Missing 'version' field in automation config for Group {group_id}")
+        return False
+
+    old_version = config['version']
+    config['version'] += 1  # Increment the version
 
     response = requests.put(url, auth=AUTH, json=config)
     if response.status_code == 200:
-        success_msg = f"Upgrade successful for Group {group_id}"
+        success_msg = f"Upgrade successful for Group {group_id} (Version: {old_version} → {config['version']})"
         logging.info(success_msg)
         log_success(success_msg)
         return True
@@ -60,9 +65,12 @@ def process_batch(file_name):
             group_id = row['groupId']
             upgrade_group(group_id)
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Upgrade MongoDB Ops Manager Groups from a batch file")
     parser.add_argument('--batch-file', required=True, help="Batch CSV file containing group IDs")
     args = parser.parse_args()
 
     process_batch(args.batch_file)
+
+if __name__ == "__main__":
+    main()
