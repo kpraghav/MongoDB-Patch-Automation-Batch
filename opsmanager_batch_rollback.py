@@ -1,47 +1,80 @@
 import requests
-import csv
 import logging
 import argparse
+import csv
 import time
-from datetime import datetime
 
-# Logging configuration
+# Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Ops Manager API details
 BASE_URL = "https://<ops-manager-url>/api/public/v1.0"
 API_KEY = "<your-api-key>"
-HEADERS = {'Authorization': f'Bearer {API_KEY}', 'Accept': 'application/json', 'Content-Type': 'application/json'}
+HEADERS = {
+    'Authorization': f'Bearer {API_KEY}',
+    'Accept': 'application/json',
+    'Content-Type': 'application/json'
+}
 
-ROLLBACK_STATUS_FILE = f'rollback_status_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+ROLLBACK_STATUS_FILE = 'rollback_status.csv'
 
-def rollback_group(group_id, previous_version):
-    logging.info(f"Rolling back Group {group_id} to version {previous_version}...")
-    # Simulate Rollback Process
-    time.sleep(3)  # Mock delay
-    return "Rollback Successful"
+def get_automation_config(group_id):
+    """Fetch the automation configuration for a given group ID."""
+    response = requests.get(f"{BASE_URL}/groups/{group_id}/automationConfig", headers=HEADERS)
+    response.raise_for_status()
+    return response.json()
 
-def process_rollback(batch_file, previous_version):
+def rollback_version(group_id):
+    """Rollback MongoDB version for a given group ID by restoring lastKnownVersion."""
+    logging.info(f"Fetching automation config for rollback of Group {group_id}")
+    config = get_automation_config(group_id)
+
+    updated = False
+    for process in config.get('processes', []):
+        if 'lastKnownVersion' in process:
+            process['version'] = process['lastKnownVersion']  # Rollback to previous version
+            updated = True
+        else:
+            logging.warning(f"No lastKnownVersion found for process in Group {group_id}, skipping rollback.")
+
+    if updated:
+        response = requests.put(
+            f"{BASE_URL}/groups/{group_id}/automationConfig",
+            headers=HEADERS,
+            json=config
+        )
+        response.raise_for_status()
+        logging.info(f"Rollback executed successfully for Group {group_id}")
+        return {'groupId': group_id, 'status': 'Rollback Successful'}
+    else:
+        logging.warning(f"Rollback skipped for Group {group_id} (no lastKnownVersion found)")
+        return {'groupId': group_id, 'status': 'No lastKnownVersion - Skipped'}
+
+def main():
+    parser = argparse.ArgumentParser(description="MongoDB Ops Manager Batch Rollback Script")
+    parser.add_argument('--file', required=True, help="CSV file containing group IDs to rollback")
+    args = parser.parse_args()
+
     rollback_status = []
-    with open(batch_file, mode='r') as file:
-        reader = csv.reader(file)
-        next(reader)  # Skip header
-        for row in reader:
-            group_id = row[0]
-            status = rollback_group(group_id, previous_version)
-            rollback_status.append({'groupId': group_id, 'status': status})
-    
-    # Write results to CSV
+
+    try:
+        with open(args.file, 'r') as file:
+            reader = csv.reader(file)
+            next(reader)  # Skip header if exists
+            for row in reader:
+                group_id = row[0].strip()
+                result = rollback_version(group_id)
+                rollback_status.append(result)
+
+    except Exception as e:
+        logging.critical(f"Unexpected error: {str(e)}")
+
+    # Write rollback status to CSV
     with open(ROLLBACK_STATUS_FILE, mode='w', newline='') as file:
         writer = csv.DictWriter(file, fieldnames=['groupId', 'status'])
         writer.writeheader()
         writer.writerows(rollback_status)
 
+    logging.info("Rollback status written to rollback_status.csv")
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Rollback MongoDB version for a group batch.")
-    parser.add_argument("--file", required=True, help="Batch file with group IDs.")
-    parser.add_argument("--version", required=True, help="Previous MongoDB version to rollback.")
-    args = parser.parse_args()
-
-    process_rollback(args.file, args.version)
-
+    main()
