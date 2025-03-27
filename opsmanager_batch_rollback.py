@@ -33,19 +33,28 @@ def log_success(message):
 def rollback_group(group_id):
     url = f"{BASE_URL}/groups/{group_id}/automationConfig"
     
+    # Fetch the current automation config
     response = requests.get(url, auth=AUTH)
     if response.status_code != 200:
         log_error(f"Failed to fetch automation config for Group {group_id}", response)
         return False
 
     config = response.json()
-    
-    # Decrement the version
-    config['version'] -= 1
+
+    if 'version' not in config:
+        log_error(f"Missing 'version' field in automation config for Group {group_id}")
+        return False
+
+    old_version = config['version']
+    if old_version > 0:  # Ensure we don't decrement below 0
+        config['version'] -= 1
+    else:
+        log_error(f"Rollback failed for Group {group_id} - Already at version 0")
+        return False
 
     response = requests.put(url, auth=AUTH, json=config)
     if response.status_code == 200:
-        success_msg = f"Rollback successful for Group {group_id}"
+        success_msg = f"Rollback successful for Group {group_id} (Version: {old_version} → {config['version']})"
         logging.info(success_msg)
         log_success(success_msg)
         return True
@@ -60,9 +69,12 @@ def process_batch(file_name):
             group_id = row['groupId']
             rollback_group(group_id)
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Rollback MongoDB Ops Manager Groups from a batch file")
     parser.add_argument('--batch-file', required=True, help="Batch CSV file containing group IDs")
     args = parser.parse_args()
 
     process_batch(args.batch_file)
+
+if __name__ == "__main__":
+    main()
