@@ -40,6 +40,17 @@ Command below -
 Command below - 
 - python opsmanager_batch_rollback.py --file batch_group_files/group_batch_1.csv --version 7.0.15
 
+✅ Monitors Upgrade Completion
+
+Checks if all processes within a group have reached the target version.
+
+If timeout (30 min) occurs, it logs an error and records failure.
+
+✅ Writes Upgrade Status to CSV
+
+Creates an output file like upgrade_status_1714298162.csv (timestamped).
+
+Status will show "Upgrade Successful" or "Upgrade Timeout".
 
 #####OVERALL DESIGN APPROACH 
 
