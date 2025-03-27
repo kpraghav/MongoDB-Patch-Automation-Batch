@@ -1,45 +1,103 @@
 import requests
-import csv
 import logging
 import argparse
+import csv
 import time
-from datetime import datetime
 
-# Logging configuration
+# Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 BASE_URL = "https://<ops-manager-url>/api/public/v1.0"
 API_KEY = "<your-api-key>"
-HEADERS = {'Authorization': f'Bearer {API_KEY}', 'Accept': 'application/json', 'Content-Type': 'application/json'}
+HEADERS = {
+    'Authorization': f'Bearer {API_KEY}',
+    'Accept': 'application/json',
+    'Content-Type': 'application/json'
+}
 
-PATCH_STATUS_FILE = f'patch_status_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+UPGRADE_STATUS_FILE = 'upgrade_status.csv'
 
-def upgrade_group(group_id, version):
-    logging.info(f"Upgrading Group {group_id} to version {version}...")
-    # Simulate Upgrade Process
-    time.sleep(3)  # Mock delay
-    return "Success"
+def get_automation_config(group_id):
+    """Fetch the automation configuration for a given group ID."""
+    response = requests.get(f"{BASE_URL}/groups/{group_id}/automationConfig", headers=HEADERS)
+    response.raise_for_status()
+    return response.json()
 
-def process_upgrade(batch_file, version):
-    patch_status = []
-    with open(batch_file, mode='r') as file:
-        reader = csv.reader(file)
-        next(reader)  # Skip header
-        for row in reader:
-            group_id = row[0]
-            status = upgrade_group(group_id, version)
-            patch_status.append({'groupId': group_id, 'status': status})
-    
-    # Write results to CSV
-    with open(PATCH_STATUS_FILE, mode='w', newline='') as file:
-        writer = csv.DictWriter(file, fieldnames=['groupId', 'status'])
-        writer.writeheader()
-        writer.writerows(patch_status)
+def upgrade_version(group_id, version):
+    """Upgrade MongoDB version for a given group ID."""
+    logging.info(f"Fetching automation config for upgrade of Group {group_id}")
+    config = get_automation_config(group_id)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Upgrade MongoDB version for group batch.")
-    parser.add_argument("--file", required=True, help="Batch file with group IDs.")
-    parser.add_argument("--version", required=True, help="MongoDB version to upgrade.")
+    updated = False
+    for process in config.get('processes', []):
+        if process.get('version') != version:
+            process['version'] = version  # Set new MongoDB version
+            updated = True
+
+    if updated:
+        response = requests.put(
+            f"{BASE_URL}/groups/{group_id}/automationConfig",
+            headers=HEADERS,
+            json=config
+        )
+        response.raise_for_status()
+        logging.info(f"Upgrade initiated successfully for Group {group_id}")
+        return {'groupId': group_id, 'status': 'Upgrade Initiated'}
+    else:
+        logging.warning(f"Group {group_id} is already on version {version}")
+        return {'groupId': group_id, 'status': 'Already Upgraded'}
+
+def monitor_upgrade(group_id, version):
+    """Monitor upgrade process and confirm completion."""
+    logging.info(f"Monitoring upgrade progress for Group {group_id}")
+    timeout = 1800  # 30 minutes timeout
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        time.sleep(30)
+        config = get_automation_config(group_id)
+
+        if all(process.get('version') == version for process in config.get('processes', [])):
+            logging.info(f"Upgrade completed successfully for Group {group_id}")
+            return {'groupId': group_id, 'status': 'Upgrade Successful'}
+        logging.info("Upgrade still in progress...")
+
+    logging.error(f"Upgrade timed out for Group {group_id}")
+    return {'groupId': group_id, 'status': 'Upgrade Timeout'}
+
+def main():
+    parser = argparse.ArgumentParser(description="MongoDB Ops Manager Batch Upgrade Script")
+    parser.add_argument('--file', required=True, help="CSV file containing group IDs to upgrade")
+    parser.add_argument('--version', required=True, help="MongoDB patch version to upgrade to")
     args = parser.parse_args()
 
-    process_upgrade(args.file, args.version)
+    upgrade_status = []
+
+    try:
+        with open(args.file, 'r') as file:
+            reader = csv.reader(file)
+            next(reader)  # Skip header if exists
+            for row in reader:
+                group_id = row[0].strip()
+                result = upgrade_version(group_id, args.version)
+                
+                if result['status'] == 'Upgrade Initiated':
+                    monitoring_result = monitor_upgrade(group_id, args.version)
+                    upgrade_status.append(monitoring_result)
+                else:
+                    upgrade_status.append(result)
+
+    except Exception as e:
+        logging.critical(f"Unexpected error: {str(e)}")
+
+    # Write upgrade status to CSV
+    output_file = f'upgrade_status_{int(time.time())}.csv'
+    with open(output_file, mode='w', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=['groupId', 'status'])
+        writer.writeheader()
+        writer.writerows(upgrade_status)
+
+    logging.info(f"Upgrade status written to {output_file}")
+
+if __name__ == "__main__":
+    main()
